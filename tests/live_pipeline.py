@@ -178,6 +178,18 @@ async def main() -> None:
             deposit=f"{listing.deposit:,}" if listing.deposit else "not advertised")},
         {"role": "user", "content": "The broker has picked up the call. Greet them and begin."},
     ]
+    # DEBUG: dump every LLM request payload
+    import json as _json
+    _orig_create = llm._client.chat.completions.create
+    _req_n = [0]
+    async def _logged_create(**kwargs):
+        _req_n[0] += 1
+        with open(f"/tmp/llm_req_{_req_n[0]}.json", "w") as f:
+            _json.dump({k: v for k, v in kwargs.items() if k != "stream"}, f, default=str, indent=1)
+        print(f"[llm] request #{_req_n[0]} dumped", flush=True)
+        return await _orig_create(**kwargs)
+    llm._client.chat.completions.create = _logged_create
+
     context = OpenAILLMContext(messages=messages, tools=TOOLS)
     aggregators = llm.create_context_aggregator(context)
 
@@ -196,7 +208,7 @@ async def main() -> None:
 
     async def watchdog():
         try:
-            await asyncio.wait_for(done.wait(), timeout=150)
+            await asyncio.wait_for(done.wait(), timeout=75)
         except asyncio.TimeoutError:
             pass
         await asyncio.sleep(2)  # let TTS audio flush
