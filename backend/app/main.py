@@ -125,13 +125,13 @@ async def api_offer(offer: Offer):
     # has necessarily finished. With one-shot signaling, wait for gathering so
     # the SDP answer contains the server relay candidate rather than only its
     # unreachable Render container/private candidates.
-    original_pc_set_local = connection.pc.setLocalDescription
+    original_pc_set_local = connection._pc.setLocalDescription
     async def _set_local_and_gather(description):
         await original_pc_set_local(description)
         deadline = asyncio.get_running_loop().time() + 8
-        while connection.pc.iceGatheringState != "complete" and asyncio.get_running_loop().time() < deadline:
+        while connection._pc.iceGatheringState != "complete" and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.05)
-    connection.pc.setLocalDescription = _set_local_and_gather
+    connection._pc.setLocalDescription = _set_local_and_gather
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
     if answer is None:
