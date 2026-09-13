@@ -154,7 +154,8 @@ async def main() -> None:
 
     stt = WavSarvamSTTService(api_key=SARVAM_KEY, model="saaras:v3",
                               params=SarvamSTTService.InputParams(mode="codemix"))
-    llm = GroqLLMService(api_key=GROQ_KEY, model="openai/gpt-oss-20b")
+    llm = GroqLLMService(api_key=GROQ_KEY, model="openai/gpt-oss-20b",
+                          params=GroqLLMService.InputParams(extra={"reasoning_effort": "low"}))
     tts = SarvamTTSService(api_key=SARVAM_KEY, model="bulbul:v3", voice_id="neha")
 
     async def record_fact_handler(params):

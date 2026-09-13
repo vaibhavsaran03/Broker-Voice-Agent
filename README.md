@@ -154,9 +154,13 @@ Verified live in this harness:
 
 Known issues, not yet fixed (recorded here so nothing is overstated):
 
-- gpt-oss-20b over-uses the tools: in the last live run it fired 10
-  `record_fact` calls, invented an available_from date the broker never said,
-  and never produced a spoken reply, so end-to-end per-turn latency
-  (speech -> agent audio) is not measured yet. Prompt/tool tuning or a model
-  swap is the next step. Until then the repo claims no conversational latency
-  numbers.
+- Tool-use behavior is model- and settings-sensitive. Direct API tests
+  (same prompt, same tools, same broker transcript) show openai/gpt-oss-20b
+  with reasoning_effort=low does the right thing: one round of record_fact
+  calls (rent/deposit/availability exactly as stated), then a natural spoken
+  follow-up ("Okay. You said the rent is 35,000 rupees. Is that 35,000 per
+  month?"), ~300-450ms per call. With default (medium) reasoning it loops
+  tool calls and once invented an available_from date the broker never said.
+  The pipeline now pins reasoning_effort=low, but the full in-pipeline spoken
+  turn still needs one more debug pass, so per-turn conversational latency is
+  not measured yet and the repo claims no such numbers.

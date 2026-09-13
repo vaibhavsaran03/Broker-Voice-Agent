@@ -309,7 +309,13 @@ async def run_agent(
         model=sarvam_stt_model,
         params=SarvamSTTService.InputParams(mode="codemix"),
     )
-    llm = GroqLLMService(api_key=groq_api_key, model=groq_model)
+    llm = GroqLLMService(
+        api_key=groq_api_key,
+        model=groq_model,
+        # gpt-oss on Groq defaults to medium reasoning: it loops tool calls and
+        # never speaks (and invented a fact in testing). Low effort talks.
+        params=GroqLLMService.InputParams(extra={"reasoning_effort": "low"}),
+    )
     tts = SarvamTTSService(
         api_key=sarvam_api_key, model=sarvam_tts_model, voice_id=sarvam_tts_voice
     )
