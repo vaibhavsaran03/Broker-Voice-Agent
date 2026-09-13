@@ -11,9 +11,18 @@ import time
 
 import requests
 
-KEY = os.environ.get("SARVAM_API_KEY") or open(
-    os.path.join(os.path.dirname(__file__), "..", ".env")
-).read().split("=", 1)[1].strip()
+def _load_key():
+    if os.environ.get("SARVAM_API_KEY"):
+        return os.environ["SARVAM_API_KEY"]
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    for line in open(env_path):
+        line = line.strip()
+        if line.startswith("SARVAM_API_KEY="):
+            return line.split("=", 1)[1].strip()
+    raise SystemExit("SARVAM_API_KEY not found in env or .env")
+
+
+KEY = _load_key()
 H = {"api-subscription-key": KEY}
 SENT = ("Haan ji, flat available hai. Rent thirty five thousand, "
         "deposit two months. Visit Saturday morning possible hai.")
