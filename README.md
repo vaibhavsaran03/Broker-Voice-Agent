@@ -75,6 +75,23 @@ Design choices worth explaining:
   (you stop talking -> agent starts replying). Vendor pages quote their own
   numbers; this shows what the assembled pipeline actually costs.
 
+## Verified against the live Sarvam API (13 Sep 2026)
+
+Speech round-trip test (code in `tests/live_sarvam.py`, needs `SARVAM_API_KEY`):
+synthesized a Hinglish sentence with Bulbul v3, transcribed it back with
+Saaras v3 in codemix mode, measured on a home connection:
+
+| stage | result |
+| --- | --- |
+| TTS (bulbul:v3, full audio for a ~17-word Hinglish sentence) | 4.0s REST round-trip |
+| STT (saaras:v3, codemix mode, 16kHz wav) | 1.9s REST round-trip |
+| Transcript of "Rent thirty five thousand, deposit two months" mixed into Hindi | "Rent 35,000, deposit 2 months" - numbers and English spans come back exact |
+
+These are blocking REST totals (worst case), not the streaming time-to-first-byte
+the pipeline actually runs at; the per-turn streaming numbers are what the demo
+UI measures live. Note: `bulbul:v2` was deprecated by Sarvam - this repo uses
+`bulbul:v3` throughout.
+
 ## Stack
 
 Python 3.11, Pipecat (realtime voice pipeline), Sarvam Saaras + Bulbul

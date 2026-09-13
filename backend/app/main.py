@@ -112,8 +112,8 @@ async def api_offer(offer: Offer):
                 groq_api_key=groq_key,
                 groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
                 sarvam_stt_model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
-                sarvam_tts_model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
-                sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "anushka"),
+                sarvam_tts_model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
+                sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "neha"),
             )
         finally:
             # whatever ended the call, the post-call graph runs on what was captured

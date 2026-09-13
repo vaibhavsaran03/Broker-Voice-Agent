@@ -163,8 +163,8 @@ async def run_agent(
     groq_api_key: str,
     groq_model: str = "llama-3.3-70b-versatile",
     sarvam_stt_model: str = "saaras:v3",
-    sarvam_tts_model: str = "bulbul:v2",
-    sarvam_tts_voice: str = "anushka",
+    sarvam_tts_model: str = "bulbul:v3",
+    sarvam_tts_voice: str = "neha",
 ) -> None:
     """Run one broker-verification call until the browser hangs up."""
 
