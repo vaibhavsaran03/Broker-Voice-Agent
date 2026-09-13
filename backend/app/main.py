@@ -51,7 +51,7 @@ def _xirsys_ice_config() -> list[dict]:
         if payload.get("s") != "ok":
             import logging
             logging.getLogger(__name__).error("Xirsys credential request failed: status=%r value_type=%s", payload.get("s"), type(payload.get("v")).__name__)
-            raise RuntimeError("Xirsys did not return TURN credentials")
+            raise RuntimeError(f"Xirsys did not return TURN credentials (status={payload.get('s')!r}, type={type(payload.get('v')).__name__})")
         return payload["v"]["iceServers"] if isinstance(payload.get("v"), dict) else json.loads(payload["v"])["iceServers"]
 
     # Local development can run STUN-only. Production config uses Xirsys.
