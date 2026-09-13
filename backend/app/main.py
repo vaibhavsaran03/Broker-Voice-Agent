@@ -50,7 +50,7 @@ def _xirsys_ice_config() -> list[dict]:
             payload = json.load(response)
         if payload.get("s") != "ok":
             raise RuntimeError("Xirsys did not return TURN credentials")
-        return payload["v"]["iceServers"]
+        return payload["v"]["iceServers"] if isinstance(payload.get("v"), dict) else json.loads(payload["v"])["iceServers"]
 
     # Local development can run STUN-only. Production config uses Xirsys.
     return [{"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")}]
