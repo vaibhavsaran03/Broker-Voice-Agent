@@ -161,7 +161,7 @@ TOOLS = [
             "type": "function",
             "function": {
                 "name": "record_fact",
-                "description": "Record one fact stated by the broker. Call this the moment the broker states it.",
+                "description": "Record one fact the broker JUST stated verbatim. Never call with guessed, placeholder, or derived values - if a value is unknown, ask the broker instead of calling. Do not record the same fact twice.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -247,17 +247,31 @@ def _parse_fact(record: CallRecord, field: str, value: str) -> str:
         if field == "is_available":
             f.is_available = low not in ("no", "false", "not available", "unavailable")
         elif field in ("rent", "deposit"):
+            # "deposit is 2 months" is how brokers actually talk: accept
+            # month-based deposits and convert against the recorded rent
+            # instead of rejecting and making the LLM retry with guesses.
+            months = re.search(r"(\d+)\s*months?", low)
+            if field == "deposit" and months:
+                n = int(months.group(1))
+                if f.rent:
+                    f.deposit = n * f.rent
+                    return "recorded"
+                f.notes.append(f"deposit: {n} months rent")
+                db.save_call(record)
+                return "recorded"
             num = re.search(r"[\d,]+(?:\.\d+)?k?", low)
             if num is None:
                 raise ValueError("no number found")
             val = float(num.group(0).replace(",", "").replace("k", "000"))
             if val < 100:
-                # "2 months" is not Rs 2 - refuse to guess; the post-call graph
-                # derives month-based deposits from an explicit note instead.
                 raise ValueError("implausibly small amount")
             if field == "rent":
+                if f.rent == int(val):
+                    return "already recorded"
                 f.rent = int(val)
             else:
+                if f.deposit == int(val):
+                    return "already recorded"
                 f.deposit = int(val)
         elif field == "available_from":
             f.available_from = date.fromisoformat(v)
@@ -272,7 +286,10 @@ def _parse_fact(record: CallRecord, field: str, value: str) -> str:
         else:
             return f"unknown field {field}"
     except (ValueError, IndexError):
-        return f"could not parse {field}={value!r}"
+        # Tell the model to stop guessing, not to retry with invented values.
+        return (f"rejected {field}={value!r}: record ONLY values the broker just "
+                f"stated. If unknown, ask the broker; do not call this tool for "
+                f"this field again until they answer.")
     db.save_call(record)
     return "recorded"
 
@@ -311,10 +328,11 @@ async def run_agent(
     )
     llm = GroqLLMService(
         api_key=groq_api_key,
-        model=groq_model,
         # gpt-oss on Groq defaults to medium reasoning: it loops tool calls and
         # never speaks (and invented a fact in testing). Low effort talks.
-        params=GroqLLMService.InputParams(extra={"reasoning_effort": "low"}),
+        # NOTE: params=InputParams is silently dropped by GroqLLMService -
+        # settings= is the only path that reaches the request.
+        settings=GroqLLMService.Settings(model=groq_model, extra={"reasoning_effort": "low"}),
     )
     tts = SarvamTTSService(
         api_key=sarvam_api_key, model=sarvam_tts_model, voice_id=sarvam_tts_voice

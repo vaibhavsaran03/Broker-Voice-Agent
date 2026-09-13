@@ -154,6 +154,12 @@ Verified live in this harness:
 
 Known issues, not yet fixed (recorded here so nothing is overstated):
 
+- Sarvam's streaming STT websocket intermittently returns zero transcripts
+  with a clean connection and successful sends (3 consecutive silent runs on
+  13 Sep 2026 after several successful ones; no error frames, server-side
+  silence). The full spoken turn + per-turn latency numbers are blocked on
+  this.
+
 - Tool-use behavior is model- and settings-sensitive. Direct API tests
   (same prompt, same tools, same broker transcript) show openai/gpt-oss-20b
   with reasoning_effort=low does the right thing: one round of record_fact
@@ -161,6 +167,9 @@ Known issues, not yet fixed (recorded here so nothing is overstated):
   follow-up ("Okay. You said the rent is 35,000 rupees. Is that 35,000 per
   month?"), ~300-450ms per call. With default (medium) reasoning it loops
   tool calls and once invented an available_from date the broker never said.
-  The pipeline now pins reasoning_effort=low, but the full in-pipeline spoken
-  turn still needs one more debug pass, so per-turn conversational latency is
-  not measured yet and the repo claims no such numbers.
+  The pipeline pins reasoning_effort=low via Settings (the params= path is
+  silently dropped by pipecat's GroqLLMService - found by dumping the actual
+  request payloads in tests/live_pipeline.py). The fact parser also accepts
+  broker-style month deposits ("2 months" -> 2 x recorded rent) instead of
+  rejecting them, which was driving a tool-retry loop, and rejections now
+  tell the model to ask the broker rather than guess.

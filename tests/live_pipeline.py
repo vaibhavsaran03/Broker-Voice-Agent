@@ -152,10 +152,28 @@ async def main() -> None:
         if message.get("type") == "latency":
             done.set()
 
-    stt = WavSarvamSTTService(api_key=SARVAM_KEY, model="saaras:v3",
-                              params=SarvamSTTService.InputParams(mode="codemix"))
-    llm = GroqLLMService(api_key=GROQ_KEY, model="openai/gpt-oss-20b",
-                          params=GroqLLMService.InputParams(extra={"reasoning_effort": "low"}))
+    class DbgSTT(WavSarvamSTTService):
+        async def _connect(self):
+            try:
+                await super()._connect()
+                print("[stt] connected", flush=True)
+            except Exception as e:
+                print(f"[stt] CONNECT FAILED: {e}", flush=True)
+                raise
+        async def _send_pcm(self, pcm):
+            if not hasattr(self, "_sent"): self._sent = 0
+            self._sent += 1
+            if self._sent <= 2 or self._sent % 25 == 0:
+                print(f"[stt] sent chunk #{self._sent}", flush=True)
+            await super()._send_pcm(pcm)
+        async def _handle_message(self, message):
+            print(f"[stt] MSG {str(getattr(message, 'data', message))[:120]}", flush=True)
+            await super()._handle_message(message)
+    stt = DbgSTT(api_key=SARVAM_KEY, model="saaras:v3",
+                 params=SarvamSTTService.InputParams(mode="codemix"))
+    llm = GroqLLMService(api_key=GROQ_KEY,
+                          settings=GroqLLMService.Settings(model="openai/gpt-oss-20b",
+                                                           extra={"reasoning_effort": "low"}))
     tts = SarvamTTSService(api_key=SARVAM_KEY, model="bulbul:v3", voice_id="neha")
 
     async def record_fact_handler(params):

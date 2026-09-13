@@ -58,7 +58,12 @@ def test_parse_fact_numbers(fresh_db):
     r = _record()
     assert _parse_fact(r, "rent", "35k") == "recorded" and r.facts.rent == 35000
     assert _parse_fact(r, "rent", "Rs 34,000") == "recorded" and r.facts.rent == 34000
-    assert _parse_fact(r, "deposit", "2 months") != "recorded"  # not silently guessed
+    # month-based deposits convert against recorded rent (or fall back to a note)
+    assert r.facts.rent == 34000
+    assert _parse_fact(r, "deposit", "2 months") == "recorded" and r.facts.deposit == 68000
+    r2 = _record()  # no rent recorded yet
+    assert _parse_fact(r2, "deposit", "2 months") == "recorded" and r2.facts.deposit is None
+    assert r2.facts.notes == ["deposit: 2 months rent"]
     assert _parse_fact(r, "available_from", "2026-10-01") == "recorded"
     assert r.facts.available_from == date(2026, 10, 1)
     assert _parse_fact(r, "rent", "around thirty five") != "recorded"
