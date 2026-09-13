@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
 
 from . import db, graph
 
@@ -29,6 +29,30 @@ app = FastAPI(title="Broker-Voice-Agent (prototype)")
 def _startup() -> None:
     db.init_db()
     db.seed_mock_listings()
+
+
+def _ice_servers() -> list:
+    """ICE servers for the WebRTC leg.
+
+    Host candidates alone only work when browser and server share a network
+    (local docker-compose). Behind Render's proxy the container's host
+    candidate is a private IP, so a TURN relay is required - defaults to the
+    free Open Relay project, overridable via TURN_URL/TURN_USERNAME/
+    TURN_CREDENTIAL (TURN_URL may be a comma-separated list).
+    """
+    servers = [IceServer(urls=os.getenv("STUN_URL", "stun:stun.l.google.com:19302"))]
+    turn_url = os.getenv("TURN_URL", "turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443")
+    turn_user = os.getenv("TURN_USERNAME", "openrelayproject")
+    turn_cred = os.getenv("TURN_CREDENTIAL", "openrelayproject")
+    if turn_url:
+        servers.append(
+            IceServer(
+                urls=[u.strip() for u in turn_url.split(",") if u.strip()],
+                username=turn_user,
+                credential=turn_cred,
+            )
+        )
+    return servers
 
 
 class Offer(BaseModel):
@@ -96,7 +120,7 @@ async def api_offer(offer: Offer):
 
     from .pipeline import run_agent  # deferred: keeps keyless endpoints importable
 
-    connection = SmallWebRTCConnection()
+    connection = SmallWebRTCConnection(ice_servers=_ice_servers())
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
     if answer is None:
