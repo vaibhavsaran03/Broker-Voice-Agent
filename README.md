@@ -173,3 +173,13 @@ Known issues, not yet fixed (recorded here so nothing is overstated):
   broker-style month deposits ("2 months" -> 2 x recorded rent) instead of
   rejecting them, which was driving a tool-retry loop, and rejections now
   tell the model to ask the broker rather than guess.
+
+## Live demo
+
+https://broker-voice-agent.onrender.com (Render free tier, Docker, Oregon -
+same setup as the Invoice Auditor demo). Free tier sleeps after ~15 min idle,
+so the first load can take ~50s (cold start); after that it is instant. The
+demo page, listings API, and per-turn latency table are all live. Note:
+auto-deploy is off (public-repo services only redeploy manually), and the
+live WebRTC call leg from Render's proxy is verified in-browser only up to
+the offer endpoint - the mic call is best tried from a phone.
