@@ -122,7 +122,7 @@ async def api_offer(offer: Offer):
 
     connection = SmallWebRTCConnection(ice_servers=_ice_servers())
     import logging
-    logging.getLogger(__name__).warning("Configured ICE servers: %s", [(x.urls, bool(x.username), bool(x.credential)) for x in connection.ice_servers])
+    print("ICE_CONFIG_SHAPE", [(x.urls, bool(x.username), bool(x.credential)) for x in connection.ice_servers], flush=True)
     # aiortc returns from setLocalDescription before TURN candidate gathering
     # has necessarily finished. With one-shot signaling, wait for gathering so
     # the SDP answer contains the server relay candidate rather than only its
@@ -136,6 +136,8 @@ async def api_offer(offer: Offer):
     connection._pc.setLocalDescription = _set_local_and_gather
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
+    if answer is not None:
+        print("ANSWER_CANDIDATES", [line for line in answer.sdp.splitlines() if line.startswith("a=candidate")], flush=True)
     if answer is None:
         raise HTTPException(400, "could not build SDP answer")
 
