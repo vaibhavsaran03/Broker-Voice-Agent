@@ -110,7 +110,7 @@ async def api_offer(offer: Offer):
                 record,
                 sarvam_api_key=sarvam_key,
                 groq_api_key=groq_key,
-                groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
                 sarvam_stt_model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
                 sarvam_tts_model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
                 sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "neha"),

@@ -107,7 +107,13 @@ async function startCall(){
   await pc.setLocalDescription(offer);
   const ans = await fetch('/api/offer', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({sdp: offer.sdp, type: offer.type, call_id: callId})});
-  if(!ans.ok){ setStatus('server: ' + (await ans.json()).detail); return; }
+  if(!ans.ok){
+    let detail = ans.status;
+    try { detail = (await ans.json()).detail || detail; } catch(e) { /* non-JSON error page */ }
+    setStatus('server error: ' + detail);
+    $('call').disabled = false;
+    return;
+  }
   await pc.setRemoteDescription(await ans.json());
   $('hangup').disabled = false;
 }
