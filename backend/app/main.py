@@ -6,15 +6,12 @@ WebRTC offer endpoint the browser connects to for the live voice call.
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import os
-import urllib.request
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
@@ -34,47 +31,28 @@ def _startup() -> None:
     db.seed_mock_listings()
 
 
-def _xirsys_ice_config() -> list[dict]:
-    """Mint fresh provider credentials for each page/offer (max TTL 6 hours)."""
-    ident = os.getenv("XIRSYS_IDENT", "")
-    secret = os.getenv("XIRSYS_SECRET", "")
-    channel = os.getenv("XIRSYS_CHANNEL", "")
-    if ident and secret and channel:
-        auth = base64.b64encode(f"{ident}:{secret}".encode()).decode()
-        request = urllib.request.Request(
-            f"https://global.xirsys.net/_turn/{channel}?webrtc=1&expire=21600",
-            method="PUT",
-            headers={"Authorization": f"Basic {auth}"},
+def _ice_servers() -> list:
+    """ICE servers for the WebRTC leg.
+
+    Host candidates alone only work when browser and server share a network
+    (local docker-compose). Behind Render's proxy the container's host
+    candidate is a private IP, so a TURN relay is required. Production values
+    come from TURN_URL/TURN_USERNAME/TURN_CREDENTIAL; local development keeps
+    STUN-only behavior when those variables are absent.
+    """
+    servers = [IceServer(urls=os.getenv("STUN_URL", "stun:stun.l.google.com:19302"))]
+    turn_url = os.getenv("TURN_URL", "")
+    turn_user = os.getenv("TURN_USERNAME", "")
+    turn_cred = os.getenv("TURN_CREDENTIAL", "")
+    if turn_url:
+        servers.append(
+            IceServer(
+                urls=[u.strip() for u in turn_url.split(",") if u.strip()],
+                username=turn_user,
+                credential=turn_cred,
+            )
         )
-        with urllib.request.urlopen(request, timeout=8) as response:
-            payload = json.load(response)
-        if payload.get("s") != "ok":
-            import logging
-            logging.getLogger(__name__).error("Xirsys credential request failed: status=%r value_type=%s", payload.get("s"), type(payload.get("v")).__name__)
-            raise RuntimeError(f"Xirsys did not return TURN credentials (status={payload.get('s')!r}, type={type(payload.get('v')).__name__})")
-        return payload["v"]["iceServers"] if isinstance(payload.get("v"), dict) else json.loads(payload["v"])["iceServers"]
-
-    # Local development can run STUN-only. Production config uses Xirsys.
-    return [{"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")}]
-
-
-def _ice_servers(config: list[dict]) -> list:
-    servers = []
-    for item in config:
-        servers.append(IceServer(
-            urls=item["urls"],
-            username=item.get("username"),
-            credential=item.get("credential"),
-        ))
     return servers
-
-
-@app.get("/api/ice-servers")
-def api_ice_servers():
-    try:
-        return _xirsys_ice_config()
-    except Exception as exc:
-        raise HTTPException(503, f"TURN credential service unavailable: {type(exc).__name__}")
 
 
 class Offer(BaseModel):
@@ -142,11 +120,7 @@ async def api_offer(offer: Offer):
 
     from .pipeline import run_agent  # deferred: keeps keyless endpoints importable
 
-    try:
-        ice_config = await asyncio.to_thread(_xirsys_ice_config)
-    except Exception as exc:
-        raise HTTPException(503, f"TURN credential service unavailable: {type(exc).__name__}")
-    connection = SmallWebRTCConnection(ice_servers=_ice_servers(ice_config))
+    connection = SmallWebRTCConnection(ice_servers=_ice_servers())
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
     if answer is None:
@@ -179,7 +153,22 @@ async def api_offer(offer: Offer):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Keep the browser ICE configuration in the same environment-backed source
+    # of truth as the server. TURN credentials are necessarily exposed to the
+    # WebRTC client, but are short-lived/provider-scoped rather than API keys.
+    html = (STATIC_DIR / "index.html").read_text()
+    browser_ice = [
+        {"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")},
+    ]
+    turn_urls = [u.strip() for u in os.getenv("TURN_URL", "").split(",") if u.strip()]
+    if turn_urls:
+        browser_ice.append({
+            "urls": turn_urls,
+            "username": os.getenv("TURN_USERNAME", ""),
+            "credential": os.getenv("TURN_CREDENTIAL", ""),
+        })
+    import json
+    return HTMLResponse(html.replace("__ICE_SERVERS__", json.dumps(browser_ice)))
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
