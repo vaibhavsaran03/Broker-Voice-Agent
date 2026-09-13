@@ -96,7 +96,8 @@ async function startCall(){
   const call = await res.json(); callId = call.id;
   setStatus('connecting mic + webrtc...');
 
-  pc = new RTCPeerConnection({iceServers: __ICE_SERVERS__});
+  const iceServers = await (await fetch('/api/ice-servers')).json();
+  pc = new RTCPeerConnection({iceServers});
   dc = pc.createDataChannel('chat');
   dc.onmessage = e => onMessage(JSON.parse(e.data));
   pc.ontrack = e => { $('remote').srcObject = e.streams[0]; };
