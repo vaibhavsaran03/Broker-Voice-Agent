@@ -181,5 +181,11 @@ same setup as the Invoice Auditor demo). Free tier sleeps after ~15 min idle,
 so the first load can take ~50s (cold start); after that it is instant. The
 demo page, listings API, and per-turn latency table are all live. Note:
 auto-deploy is off (public-repo services only redeploy manually), and the
-live WebRTC call leg from Render's proxy is verified in-browser only up to
-the offer endpoint - the mic call is best tried from a phone.
+WebRTC call leg: the offer endpoint answers SDP and the full pipeline
+(Sarvam STT -> Groq -> Sarvam TTS) boots per call. Render containers have no
+public UDP ingress, so both sides use STUN + a TURN relay (defaults to the
+free Open Relay project - fine for a demo, swap in your own via
+TURN_URL/TURN_USERNAME/TURN_CREDENTIAL for anything serious). End-to-end mic
+audio has been verified locally via docker-compose; from the hosted URL it
+depends on the client network allowing TURN, and is best tried from a phone
+browser rather than a locked-down desktop.
