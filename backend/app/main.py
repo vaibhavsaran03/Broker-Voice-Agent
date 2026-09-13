@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
@@ -36,14 +36,14 @@ def _ice_servers() -> list:
 
     Host candidates alone only work when browser and server share a network
     (local docker-compose). Behind Render's proxy the container's host
-    candidate is a private IP, so a TURN relay is required - defaults to the
-    free Open Relay project, overridable via TURN_URL/TURN_USERNAME/
-    TURN_CREDENTIAL (TURN_URL may be a comma-separated list).
+    candidate is a private IP, so a TURN relay is required. Production values
+    come from TURN_URL/TURN_USERNAME/TURN_CREDENTIAL; local development keeps
+    STUN-only behavior when those variables are absent.
     """
     servers = [IceServer(urls=os.getenv("STUN_URL", "stun:stun.l.google.com:19302"))]
-    turn_url = os.getenv("TURN_URL", "turn:openrelay.metered.ca:80,turn:openrelay.metered.ca:443")
-    turn_user = os.getenv("TURN_USERNAME", "openrelayproject")
-    turn_cred = os.getenv("TURN_CREDENTIAL", "openrelayproject")
+    turn_url = os.getenv("TURN_URL", "")
+    turn_user = os.getenv("TURN_USERNAME", "")
+    turn_cred = os.getenv("TURN_CREDENTIAL", "")
     if turn_url:
         servers.append(
             IceServer(
@@ -153,7 +153,22 @@ async def api_offer(offer: Offer):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Keep the browser ICE configuration in the same environment-backed source
+    # of truth as the server. TURN credentials are necessarily exposed to the
+    # WebRTC client, but are short-lived/provider-scoped rather than API keys.
+    html = (STATIC_DIR / "index.html").read_text()
+    browser_ice = [
+        {"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")},
+    ]
+    turn_urls = [u.strip() for u in os.getenv("TURN_URL", "").split(",") if u.strip()]
+    if turn_urls:
+        browser_ice.append({
+            "urls": turn_urls,
+            "username": os.getenv("TURN_USERNAME", ""),
+            "credential": os.getenv("TURN_CREDENTIAL", ""),
+        })
+    import json
+    return HTMLResponse(html.replace("__ICE_SERVERS__", json.dumps(browser_ice)))
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
