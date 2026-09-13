@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Broker-Voice-Agent - live demo</title>
+<style>
+  :root { --bg:#0f1115; --panel:#1a1e27; --line:#2a3040; --text:#e8eaf0; --dim:#9aa3b5;
+          --accent:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--text); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  header .tag { font-size:11px; color:var(--dim); border:1px solid var(--line); padding:2px 8px; border-radius:10px; }
+  main { display:grid; grid-template-columns: 320px 1fr 340px; gap:14px; padding:14px 20px; }
+  @media (max-width:1100px){ main{ grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 10px; }
+  .listing { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; font-size:12px; }
+  .listing:hover { border-color:var(--accent); }
+  .listing.sel { border-color:var(--accent); background:#16241b; }
+  .listing .r { color:var(--accent); }
+  .listing .st { float:right; font-size:10px; color:var(--dim); }
+  .listing .st.verified_available{ color:var(--accent); } .listing .st.verified_unavailable,.listing .st.conflict{ color:var(--bad); } .listing .st.stale{ color:var(--warn); }
+  button { background:var(--accent); color:#0f1115; border:0; border-radius:8px; padding:10px 16px; font-weight:700; cursor:pointer; font-family:inherit; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--text); }
+  #transcript { height:340px; overflow-y:auto; font-size:13px; line-height:1.5; }
+  #transcript .b { color:var(--text); } #transcript .a { color:var(--accent); }
+  #transcript .who { color:var(--dim); font-size:11px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td,th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; }
+  .facts div { display:flex; justify-content:space-between; padding:3px 0; font-size:12px; border-bottom:1px dashed var(--line); }
+  .facts .k { color:var(--dim); }
+  #verdict { font-size:12px; margin-top:10px; padding:10px; border-radius:8px; border:1px solid var(--line); display:none; white-space:pre-wrap; }
+  #status { font-size:12px; color:var(--dim); }
+  audio { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Broker-Voice-Agent</h1>
+  <span class="tag">prototype - mock listings</span>
+  <span class="tag">you play the broker; Hindi / Hinglish / English all fine</span>
+  <span id="status">idle</span>
+</header>
+<main>
+  <section>
+    <h2>1. Pick a listing to verify</h2>
+    <div id="listings">loading...</div>
+    <button id="call" disabled>Start verification call</button>
+    <button id="hangup" class="ghost" disabled>Hang up</button>
+  </section>
+  <section>
+    <h2>2. Live call</h2>
+    <div id="transcript"></div>
+    <h2 style="margin-top:14px">Per-turn latency (measured, ms)</h2>
+    <table id="latency">
+      <thead><tr><th>turn</th><th>you spoke</th><th>stt</th><th>llm ttfb</th><th>tts ttfb</th><th>reply total</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="verdict"></div>
+  </section>
+  <section>
+    <h2>3. Facts the agent pinned down</h2>
+    <div class="facts" id="facts"><div><span class="k">(nothing yet - start a call)</span></div></div>
+  </section>
+</main>
+<audio id="remote" autoplay></audio>
+<script>
+let pc=null, dc=null, callId=null, selected=null;
+const $ = id => document.getElementById(id);
+const fmt = n => n==null ? '-' : n;
+
+async function loadListings(){
+  const res = await fetch('/api/listings');
+  const items = await res.json();
+  $('listings').innerHTML = items.map(l => `
+    <div class="listing" data-id="${l.id}">
+      <span class="st ${l.verification_status}">${l.verification_status}</span>
+      <b>${l.bhk}BHK ${l.society}</b><br>
+      ${l.address}, ${l.city}<br>
+      <span class="r">Rs ${l.rent.toLocaleString('en-IN')}/mo</span> - broker: ${l.broker_name} (${l.source})
+    </div>`).join('');
+  document.querySelectorAll('.listing').forEach(el => el.onclick = () => {
+    document.querySelectorAll('.listing').forEach(x => x.classList.remove('sel'));
+    el.classList.add('sel'); selected = el.dataset.id; $('call').disabled = false;
+  });
+}
+
+async function startCall(){
+  $('call').disabled = true; $('transcript').innerHTML='';
+  document.querySelector('#latency tbody').innerHTML=''; $('verdict').style.display='none';
+  const res = await fetch(`/api/calls?listing_id=${selected}`, {method:'POST'});
+  const call = await res.json(); callId = call.id;
+  setStatus('connecting mic + webrtc...');
+
+  pc = new RTCPeerConnection();
+  dc = pc.createDataChannel('chat');
+  dc.onmessage = e => onMessage(JSON.parse(e.data));
+  pc.ontrack = e => { $('remote').srcObject = e.streams[0]; };
+  const mic = await navigator.mediaDevices.getUserMedia({audio:true});
+  mic.getTracks().forEach(t => pc.addTrack(t, mic));
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  const ans = await fetch('/api/offer', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sdp: offer.sdp, type: offer.type, call_id: callId})});
+  if(!ans.ok){ setStatus('server: ' + (await ans.json()).detail); return; }
+  await pc.setRemoteDescription(await ans.json());
+  $('hangup').disabled = false;
+}
+
+function setStatus(s){ $('status').textContent = s; }
+
+function onMessage(m){
+  if(m.type==='status'){ setStatus(m.status + (m.call_id ? ' (call ' + m.call_id + ')' : '')); }
+  else if(m.type==='transcript'){
+    $('transcript').insertAdjacentHTML('beforeend',
+      `<div class="b"><span class="who">broker (you)</span><br>${m.text}</div>`);
+    $('transcript').scrollTop = 1e9;
+  }
+  else if(m.type==='facts'){ renderFacts(m.facts); }
+  else if(m.type==='latency'){ renderLatency(m.turn); }
+}
+
+function renderFacts(f){
+  const rows = [
+    ['available', f.is_available==null?'-':(f.is_available?'yes':'no')],
+    ['rent', f.rent?`Rs ${f.rent.toLocaleString('en-IN')}`:'-'],
+    ['deposit', f.deposit?`Rs ${f.deposit.toLocaleString('en-IN')}`:'-'],
+    ['available from', f.available_from||'-'],
+    ['furnishing', f.furnishing||'-'],
+    ['visit slots', (f.visit_slots||[]).join(', ')||'-'],
+    ['brokerage', f.brokerage_fee||'-'],
+    ['notes', (f.notes||[]).join(' | ')||'-'],
+  ];
+  $('facts').innerHTML = rows.map(([k,v])=>`<div><span class="k">${k}</span><span>${v}</span></div>`).join('');
+}
+
+function renderLatency(t){
+  document.querySelector('#latency tbody').insertAdjacentHTML('beforeend',
+    `<tr><td>${t.turn}</td><td>${fmt(t.user_speech_ms)}</td><td>${fmt(t.stt_ms)}</td><td>${fmt(t.llm_ms)}</td><td>${fmt(t.tts_ms)}</td><td><b>${fmt(t.total_response_ms)}</b></td></tr>`);
+}
+
+async function hangup(){
+  $('hangup').disabled = true;
+  if(pc){ pc.close(); pc=null; }
+  setStatus('call over - running verification + duplicate check...');
+  const res = await fetch(`/api/calls/${callId}/process`, {method:'POST'});
+  const out = await res.json();
+  const v = $('verdict');
+  v.style.display='block';
+  v.textContent = `VERDICT: ${out.verification_status}` +
+    (out.duplicate_of ? `\nDUPLICATE WARNING: same property as ${out.duplicate_of}\nwhy: ${out.duplicate_reasons.join('; ')}` : '') +
+    `\n\n${out.summary}`;
+  setStatus('done');
+  loadListings();
+}
+
+$('call').onclick = startCall;
+$('hangup').onclick = hangup;
+loadListings();
+</script>
+</body>
+</html>
