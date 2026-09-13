@@ -103,13 +103,32 @@ async function startCall(){
   dc = pc.createDataChannel('chat');
   dc.onmessage = e => onMessage(JSON.parse(e.data));
   pc.ontrack = e => { $('remote').srcObject = e.streams[0]; };
+  pc.onconnectionstatechange = () => {
+    if(pc && pc.connectionState === 'connected') setStatus('connected - agent is listening');
+    else if(pc && ['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+      setStatus('webrtc ' + pc.connectionState + ' - tap Start to retry');
+      $('call').disabled = false;
+    }
+  };
   const mic = await navigator.mediaDevices.getUserMedia({audio:true});
   mic.getTracks().forEach(t => pc.addTrack(t, mic));
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+  // This app uses one-shot SDP signaling (no trickle-ICE endpoint), so the
+  // offer must include gathered candidates before it is sent to the server.
+  if(pc.iceGatheringState !== 'complete') await new Promise(resolve => {
+    const done = () => {
+      if(pc.iceGatheringState === 'complete') {
+        pc.removeEventListener('icegatheringstatechange', done); resolve();
+      }
+    };
+    pc.addEventListener('icegatheringstatechange', done);
+    setTimeout(() => { pc.removeEventListener('icegatheringstatechange', done); resolve(); }, 5000);
+  });
+  const local = pc.localDescription;
   const ans = await fetch('/api/offer', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({sdp: offer.sdp, type: offer.type, call_id: callId})});
+    body: JSON.stringify({sdp: local.sdp, type: local.type, call_id: callId})});
   if(!ans.ok){
     let detail = ans.status;
     try { detail = (await ans.json()).detail || detail; } catch(e) { /* non-JSON error page */ }
@@ -168,7 +187,14 @@ async function hangup(){
   loadListings();
 }
 
-$('call').onclick = startCall;
+$('call').onclick = async () => {
+  try { await startCall(); }
+  catch(e) {
+    console.error(e);
+    setStatus('connection error: ' + (e && e.message ? e.message : e));
+    $('call').disabled = false;
+  }
+};
 $('hangup').onclick = hangup;
 loadListings();
 </script>
