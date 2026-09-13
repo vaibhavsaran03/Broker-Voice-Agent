@@ -43,7 +43,7 @@ docker compose up --build
 browser mic ──WebRTC──> Silero VAD ──> Sarvam Saaras (STT, codemix mode)
                                         │
                                         v
-                              Groq LLM (llama-3.3-70b)
+                              Groq LLM (gpt-oss-20b)
                               function calling: record_fact / end_call
                                         │
                                         v
@@ -131,3 +131,32 @@ listings, the full post-call graph, and the API lifecycle.
 - Single concurrent call, SQLite, no auth - it's a demo, not a service.
 - Free-tier speech credits are finite; long demo sessions will burn them.
 - Turn-taking uses Silero VAD defaults; noisy broker audio would want tuning.
+
+## Live pipeline status (13 Sep 2026, latest)
+
+`tests/live_pipeline.py` drives the real pipeline in-process (no browser):
+a scripted source plays a Bulbul-synthesized Hinglish "broker" utterance into
+Sarvam STT -> Groq LLM (production system prompt + tools) -> Sarvam TTS, with
+the production LatencyTracker attached.
+
+Verified live in this harness:
+
+- Streaming STT (saaras:v3, codemix) transcribes the broker utterance; numbers
+  and English spans come through ("35000 hai deposit 2 months").
+- The Groq LLM (openai/gpt-oss-20b) called the production `record_fact` tool
+  and the production parser stored: is_available=true, rent=35000,
+  deposit=70000 - matching what the "broker" said.
+- Two real integration bugs were found and fixed by this test (see
+  `WavSarvamSTTService` in `backend/app/pipeline.py`): Sarvam's streaming SDK
+  only accepts WAV-wrapped audio, and it silently ignores sub-100ms chunks
+  while WebRTC delivers 20ms frames. Also: Groq retired
+  llama-3.3-70b-versatile; the default model is now openai/gpt-oss-20b.
+
+Known issues, not yet fixed (recorded here so nothing is overstated):
+
+- gpt-oss-20b over-uses the tools: in the last live run it fired 10
+  `record_fact` calls, invented an available_from date the broker never said,
+  and never produced a spoken reply, so end-to-end per-turn latency
+  (speech -> agent audio) is not measured yet. Prompt/tool tuning or a model
+  swap is the next step. Until then the repo claims no conversational latency
+  numbers.

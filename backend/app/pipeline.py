@@ -10,14 +10,17 @@ record only ever contains what the broker actually said.
 from __future__ import annotations
 
 import asyncio
+import io
 import re
 import time
+import wave
 from datetime import date, datetime
 from typing import Any, Awaitable, Callable
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
     Frame,
     MetricsFrame,
     TranscriptionFrame,
@@ -64,6 +67,125 @@ Rules of the call:
 7. The broker may speak Hindi or Hinglish; you may reply in simple English or Hinglish,
    matching them. Keep it natural.
 """
+
+
+class WavSarvamSTTService(SarvamSTTService):
+    """Fix two silent failures found by tests/live_pipeline.py (connection
+    OK, zero transcripts back):
+
+    1. Sarvam's streaming SDK only accepts encoding='audio/wav', but pipecat
+       hands the service raw PCM frames - so wrap each chunk in a WAV header.
+    2. The server ignores sub-100ms WAV messages without any error, and
+       WebRTC audio arrives in 20ms frames - so buffer PCM and send ~200ms
+       chunks, flushing the remainder when the user stops speaking.
+    """
+
+    MIN_CHUNK_BYTES = 6400  # 200 ms of 16 kHz mono PCM16
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pcm_buf = bytearray()
+
+    def _wrap_wav(self, pcm: bytes) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.sample_rate or 16000)
+            w.writeframes(pcm)
+        return buf.getvalue()
+
+    async def _send_pcm(self, pcm: bytes):
+        async for _frame in super().run_stt(self._wrap_wav(pcm)):
+            pass
+
+    async def run_stt(self, audio: bytes):
+        self._pcm_buf += audio
+        while len(self._pcm_buf) >= self.MIN_CHUNK_BYTES:
+            chunk = bytes(self._pcm_buf[: self.MIN_CHUNK_BYTES])
+            del self._pcm_buf[: self.MIN_CHUNK_BYTES]
+            await self._send_pcm(chunk)
+        yield None
+
+    async def _connect(self):
+        """Own the connection lifecycle. pipecat 0.0.108's _connect wires the
+        receive task through its task manager in a way that leaves the socket
+        deaf (sends land, no messages ever come back - proven by replaying the
+        captured wire bytes over a clean connection in tests). Plain asyncio
+        tasks work; verified live."""
+        from sarvamai import AsyncSarvamAI
+        from sarvamai.core.events import EventType
+
+        client = AsyncSarvamAI(api_subscription_key=self._api_key)
+        self._ws_cm = client.speech_to_text_streaming.connect(
+            model=self._settings.model,
+            mode=self._mode,
+            language_code=self._get_language_string() or "unknown",
+            sample_rate=str(self.sample_rate or 16000),
+            flush_signal="true",
+        )
+        self._socket_client = await self._ws_cm.__aenter__()
+        self._socket_client.on(
+            EventType.MESSAGE,
+            lambda m: asyncio.create_task(self._handle_message(m)),
+        )
+        self._receive_task = asyncio.create_task(self._receive_task_handler())
+
+    async def _disconnect(self):
+        if self._receive_task:
+            self._receive_task.cancel()
+            self._receive_task = None
+        self._socket_client = None
+        cm = getattr(self, "_ws_cm", None)
+        if cm:
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._ws_cm = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, (UserStoppedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            await asyncio.sleep(0.2)  # let queued audio generators drain into the buffer
+            if self._pcm_buf:
+                chunk = bytes(self._pcm_buf)
+                self._pcm_buf.clear()
+                await self._send_pcm(chunk)
+        await super().process_frame(frame, direction)
+
+
+# Tool schema shared by the live transport pipeline and the in-process
+# live test (tests/live_pipeline.py).
+TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "record_fact",
+                "description": "Record one fact stated by the broker. Call this the moment the broker states it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "enum": ["is_available", "rent", "deposit", "available_from",
+                                     "furnishing", "visit_slot", "brokerage_fee", "note"],
+                        },
+                        "value": {"type": "string",
+                                  "description": "rent/deposit as digits or '35k'; available_from as YYYY-MM-DD"},
+                    },
+                    "required": ["field", "value"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "end_call",
+                "description": "End the call once all facts are captured or the flat is confirmed unavailable.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+]
 
 
 class LatencyTracker(FrameProcessor):
@@ -161,7 +283,7 @@ async def run_agent(
     record: CallRecord,
     sarvam_api_key: str,
     groq_api_key: str,
-    groq_model: str = "llama-3.3-70b-versatile",
+    groq_model: str = "openai/gpt-oss-20b",
     sarvam_stt_model: str = "saaras:v3",
     sarvam_tts_model: str = "bulbul:v3",
     sarvam_tts_voice: str = "neha",
@@ -182,7 +304,7 @@ async def run_agent(
             vad_analyzer=SileroVADAnalyzer(),
         ),
     )
-    stt = SarvamSTTService(
+    stt = WavSarvamSTTService(
         api_key=sarvam_api_key,
         model=sarvam_stt_model,
         params=SarvamSTTService.InputParams(mode="codemix"),
@@ -206,36 +328,7 @@ async def run_agent(
     llm.register_function("record_fact", record_fact_handler)
     llm.register_function("end_call", end_call_handler)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "record_fact",
-                "description": "Record one fact stated by the broker. Call this the moment the broker states it.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "field": {
-                            "type": "string",
-                            "enum": ["is_available", "rent", "deposit", "available_from",
-                                     "furnishing", "visit_slot", "brokerage_fee", "note"],
-                        },
-                        "value": {"type": "string",
-                                  "description": "rent/deposit as digits or '35k'; available_from as YYYY-MM-DD"},
-                    },
-                    "required": ["field", "value"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "end_call",
-                "description": "End the call once all facts are captured or the flat is confirmed unavailable.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-    ]
+    tools = TOOLS
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.format(
