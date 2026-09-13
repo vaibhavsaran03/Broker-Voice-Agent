@@ -78,6 +78,14 @@ class WavSarvamSTTService(SarvamSTTService):
     2. The server ignores sub-100ms WAV messages without any error, and
        WebRTC audio arrives in 20ms frames - so buffer PCM and send ~200ms
        chunks, flushing the remainder when the user stops speaking.
+
+    3. Sarvam's streaming server never finalizes a turn without an explicit
+       flush message (verified 2026-09-14 against the raw websocket: same
+       audio + params, flush -> transcript in ~2s, no flush -> silence
+       forever). pipecat only sends that flush on VADUserStoppedSpeakingFrame
+       and only when its vad_signals setting is falsy, so turns ended by a
+       plain UserStoppedSpeakingFrame (or any vad_signals config) were
+       silently dropped. Send the flush ourselves on either stop frame.
     """
 
     MIN_CHUNK_BYTES = 6400  # 200 ms of 16 kHz mono PCM16
@@ -139,7 +147,9 @@ class WavSarvamSTTService(SarvamSTTService):
         cm = getattr(self, "_ws_cm", None)
         if cm:
             try:
-                await cm.__aexit__(None, None, None)
+                # the socket close handshake can hang after a completed turn;
+                # never let teardown block call cleanup
+                await asyncio.wait_for(cm.__aexit__(None, None, None), timeout=5)
             except Exception:
                 pass
             self._ws_cm = None
@@ -151,6 +161,8 @@ class WavSarvamSTTService(SarvamSTTService):
                 chunk = bytes(self._pcm_buf)
                 self._pcm_buf.clear()
                 await self._send_pcm(chunk)
+            if self._socket_client:
+                await self._socket_client.flush()  # server finalizes ONLY on flush
         await super().process_frame(frame, direction)
 
 

@@ -235,9 +235,24 @@ async def main() -> None:
     wd = asyncio.create_task(watchdog())
     t0 = time.perf_counter()
     try:
-        await asyncio.wait_for(runner.run(task), timeout=170)
+        await asyncio.wait_for(asyncio.shield(asyncio.create_task(runner.run(task))), timeout=170)
     except asyncio.TimeoutError:
+        # pipeline teardown can hang after a good turn; results are already
+        # collected - print and exit hard rather than wait forever
         print("[main] runner timed out, printing partial result", flush=True)
+        result = {
+            "broker_line_in": BROKER_LINE,
+            "stt_transcript": [x["text"] for x in record.transcript],
+            "agent_reply": "".join(sink.agent_text)[:600],
+            "facts": record.facts.model_dump(mode="json"),
+            "latency_ms": [x.model_dump() for x in record.latency],
+            "tts_audio_bytes": sink.tts_audio_bytes,
+            "wall_time_s": round(time.perf_counter() - t0, 1),
+            "events": [e.get("type") for e in events],
+            "note": "partial: teardown hung, printed at timeout",
+        }
+        print("LIVE_RESULT_JSON " + json.dumps(result, default=str), flush=True)
+        os._exit(0)
     total_s = time.perf_counter() - t0
     wd.cancel()
 

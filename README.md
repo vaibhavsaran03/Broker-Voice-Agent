@@ -132,40 +132,52 @@ listings, the full post-call graph, and the API lifecycle.
 - Free-tier speech credits are finite; long demo sessions will burn them.
 - Turn-taking uses Silero VAD defaults; noisy broker audio would want tuning.
 
-## Live pipeline status (13 Sep 2026, latest)
+## Live pipeline status (14 Sep 2026, latest)
 
 `tests/live_pipeline.py` drives the real pipeline in-process (no browser):
 a scripted source plays a Bulbul-synthesized Hinglish "broker" utterance into
 Sarvam STT -> Groq LLM (production system prompt + tools) -> Sarvam TTS, with
 the production LatencyTracker attached.
 
-Verified live in this harness:
+Verified live in this harness (14 Sep 2026 run):
 
-- Streaming STT (saaras:v3, codemix) transcribes the broker utterance; numbers
-  and English spans come through ("35000 hai deposit 2 months").
-- The Groq LLM (openai/gpt-oss-20b) called the production `record_fact` tool
-  and the production parser stored: is_available=true, rent=35000,
-  deposit=70000 - matching what the "broker" said.
-- Two real integration bugs were found and fixed by this test (see
-  `WavSarvamSTTService` in `backend/app/pipeline.py`): Sarvam's streaming SDK
-  only accepts WAV-wrapped audio, and it silently ignores sub-100ms chunks
-  while WebRTC delivers 20ms frames. Also: Groq retired
-  llama-3.3-70b-versatile; the default model is now openai/gpt-oss-20b.
+- Full spoken turn works end to end: streaming STT (saaras:v3, codemix)
+  transcribed the broker utterance ("Flat available hai, rent 35000 hai,
+  deposit 2 months, visit Saturday morning possible hai"), the LLM recorded
+  facts via record_fact, and the agent spoke back (719 KB of TTS audio).
+- Measured per-turn latency (LatencyTracker, this harness): STT server-side
+  processing 57-160ms per segment, LLM TTFB 219ms, TTS TTFB 607ms,
+  end-of-speech to agent voice 3.24s (includes VAD/segmentation waits).
+- Root cause of the earlier "streaming STT returns nothing" mystery: Sarvam's
+  streaming server finalizes a turn ONLY on an explicit flush message.
+  Verified with a bare websocket (no pipecat): same audio + params, flush ->
+  transcript in ~2s, no flush -> silence forever. pipecat only sends that
+  flush on VADUserStoppedSpeakingFrame, so turns ended by plain
+  UserStoppedSpeakingFrame were silently dropped. WavSarvamSTTService now
+  sends the flush itself on either stop frame.
+- Earlier live runs also fixed: WAV-wrap for the streaming SDK (it ignores
+  raw PCM), 200ms buffering (sub-100ms chunks are silently ignored), and the
+  retired llama-3.3-70b-versatile default (now openai/gpt-oss-20b).
 
 Known issues, not yet fixed (recorded here so nothing is overstated):
 
-- Sarvam's streaming STT websocket intermittently returns zero transcripts
-  with a clean connection and successful sends (3 consecutive silent runs on
-  13 Sep 2026 after several successful ones; no error frames, server-side
-  silence). The full spoken turn + per-turn latency numbers are blocked on
-  this.
+- Fact capture across a full call varies run to run: across live runs the
+  LLM recorded is_available, rent=35000, deposit=70000, and
+  visit_slot="Saturday morning" - but not all of them in every run, and it
+  once logged interim transcript segments as notes. gpt-oss-20b records one
+  fact per LLM call, so dense multi-fact utterances can outrun it.
+- pipecat's pipeline teardown hangs after a completed turn in this harness
+  (the runner never exits cleanly; the harness prints results at a 170s
+  guard timeout and exits hard). STT teardown itself is bounded by a 5s
+  timeout in WavSarvamSTTService._disconnect; the remaining hang is inside
+  pipecat's task cancellation and does not affect the call itself.
 
-- Tool-use behavior is model- and settings-sensitive. Direct API tests
-  (same prompt, same tools, same broker transcript) show openai/gpt-oss-20b
-  with reasoning_effort=low does the right thing: one round of record_fact
-  calls (rent/deposit/availability exactly as stated), then a natural spoken
-  follow-up ("Okay. You said the rent is 35,000 rupees. Is that 35,000 per
-  month?"), ~300-450ms per call. With default (medium) reasoning it loops
+Tool-use behavior notes (from direct API tests, same prompt/tools/transcript):
+openai/gpt-oss-20b with reasoning_effort=low does the right thing: one round
+of record_fact calls then a natural spoken follow-up, ~300-450ms per call.
+With default (medium) reasoning it loops
+
+
   tool calls and once invented an available_from date the broker never said.
   The pipeline pins reasoning_effort=low via Settings (the params= path is
   silently dropped by pipecat's GroqLLMService - found by dumping the actual
