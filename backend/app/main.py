@@ -49,6 +49,8 @@ def _xirsys_ice_config() -> list[dict]:
         with urllib.request.urlopen(request, timeout=8) as response:
             payload = json.load(response)
         if payload.get("s") != "ok":
+            import logging
+            logging.getLogger(__name__).error("Xirsys credential request failed: status=%r value_type=%s", payload.get("s"), type(payload.get("v")).__name__)
             raise RuntimeError("Xirsys did not return TURN credentials")
         return payload["v"]["iceServers"] if isinstance(payload.get("v"), dict) else json.loads(payload["v"])["iceServers"]
 
