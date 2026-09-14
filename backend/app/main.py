@@ -125,9 +125,9 @@ async def api_offer(offer: Offer):
 
     from .pipeline import run_agent  # deferred: keeps keyless endpoints importable
 
-    connection = SmallWebRTCConnection(ice_servers=_ice_servers())
-    import logging
-    print("ICE_CONFIG_SHAPE", [(x.urls, bool(x.username), bool(x.credential)) for x in connection.ice_servers], flush=True)
+    ice_servers = _ice_servers()
+    print("ICE_CONFIG_SHAPE", [(x.urls, bool(x.username), bool(x.credential)) for x in ice_servers], flush=True)
+    connection = SmallWebRTCConnection(ice_servers=ice_servers)
     # aiortc returns from setLocalDescription before TURN candidate gathering
     # has necessarily finished. With one-shot signaling, wait for gathering so
     # the SDP answer contains the server relay candidate rather than only its
