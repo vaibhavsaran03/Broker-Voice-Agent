@@ -49,7 +49,7 @@ def _ice_servers() -> list:
         # aiortc supports one TURN server and selects the first TURN URI it
         # encounters. Prefer TLS/TCP 443 on hosted deployments because Render
         # can block or NAT UDP allocations; give aiortc a singleton URI.
-        selected = next((u for u in urls if u.startswith("turns:") and ":443" in u), urls[0])
+        selected = next((u for u in urls if u.startswith("turn:") and ":80?transport=tcp" in u), urls[0])
         servers.append(
             IceServer(
                 urls=selected,
