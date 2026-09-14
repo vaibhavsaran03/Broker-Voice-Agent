@@ -128,11 +128,6 @@ async def api_offer(offer: Offer):
     ice_servers = _ice_servers()
     print("ICE_CONFIG_SHAPE", [(x.urls, bool(x.username), bool(x.credential)) for x in ice_servers], flush=True)
     connection = SmallWebRTCConnection(ice_servers=ice_servers)
-    # SmallWebRTCConnection builds its RTCPeerConnection during __init__, but
-    # some releases initialize it before retaining constructor ICE servers.
-    # Rebuild once after the configured servers are present so aiortc receives
-    # the TURN config that will gather the answer candidates.
-    connection._initialize()
     # aiortc returns from setLocalDescription before TURN candidate gathering
     # has necessarily finished. With one-shot signaling, wait for gathering so
     # the SDP answer contains the server relay candidate rather than only its
