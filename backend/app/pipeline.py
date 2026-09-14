@@ -353,6 +353,9 @@ async def run_agent(
     async def record_fact_handler(params):
         args = params.arguments
         ack = _parse_fact(record, args.get("field", ""), str(args.get("value", "")))
+        # _parse_fact may return early for already-recorded/month-based values;
+        # persist here too so live API state never waits for call teardown.
+        db.save_call(record)
         await send({"type": "facts", "facts": record.facts.model_dump(mode="json")})
         await params.result_callback(ack)
 
@@ -384,6 +387,7 @@ async def run_agent(
                 record.transcript.append(
                     {"role": "broker", "text": frame.text, "ts": datetime.utcnow().isoformat()}
                 )
+                db.save_call(record)
                 await send({"type": "transcript", "role": "broker", "text": frame.text})
             await self.push_frame(frame, direction)
 
