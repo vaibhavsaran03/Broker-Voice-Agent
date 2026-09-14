@@ -14,7 +14,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from aiortc import RTCIceServer
 
 from . import db, graph
 
@@ -40,7 +41,7 @@ def _ice_servers() -> list:
     come from TURN_URL/TURN_USERNAME/TURN_CREDENTIAL; local development keeps
     STUN-only behavior when those variables are absent.
     """
-    servers = [IceServer(urls=os.getenv("STUN_URL", "stun:stun.l.google.com:19302"))]
+    servers = [RTCIceServer(urls=os.getenv("STUN_URL", "stun:stun.l.google.com:19302"))]
     turn_url = os.getenv("TURN_URL", "")
     turn_user = os.getenv("TURN_USERNAME", "")
     turn_cred = os.getenv("TURN_CREDENTIAL", "")
@@ -51,7 +52,7 @@ def _ice_servers() -> list:
         # can block or NAT UDP allocations; give aiortc a singleton URI.
         selected = next((u for u in urls if u.startswith("turn:") and ":80?transport=tcp" in u), urls[0])
         servers.append(
-            IceServer(
+            RTCIceServer(
                 urls=selected,
                 username=turn_user,
                 credential=turn_cred,
