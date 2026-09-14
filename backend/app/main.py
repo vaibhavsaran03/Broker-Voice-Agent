@@ -127,8 +127,6 @@ async def api_offer(offer: Offer):
     from .pipeline import run_agent  # deferred: keeps keyless endpoints importable
 
     ice_servers = _ice_servers()
-    ice_shape = [(x.urls, bool(x.username), bool(x.credential)) for x in ice_servers]
-    print("ICE_CONFIG_SHAPE", ice_shape, flush=True)
     connection = SmallWebRTCConnection(ice_servers=ice_servers)
     # aiortc returns from setLocalDescription before TURN candidate gathering
     # has necessarily finished. With one-shot signaling, wait for gathering so
@@ -143,9 +141,6 @@ async def api_offer(offer: Offer):
     connection._pc.setLocalDescription = _set_local_and_gather
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
-    if answer is not None:
-        answer_sdp = answer.get("sdp", "") if isinstance(answer, dict) else answer.sdp
-        print("ANSWER_CANDIDATES", [line for line in answer_sdp.splitlines() if line.startswith("a=candidate")], flush=True)
     if answer is None:
         raise HTTPException(400, "could not build SDP answer")
 
@@ -171,8 +166,6 @@ async def api_offer(offer: Offer):
             await connection.cleanup()
 
     asyncio.create_task(_run())
-    if isinstance(answer, dict):
-        answer["ice_debug"] = {"configured": ice_shape, "candidates": [line for line in answer_sdp.splitlines() if line.startswith("a=candidate")]}
     return answer
 
 
