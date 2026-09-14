@@ -126,7 +126,8 @@ async def api_offer(offer: Offer):
     from .pipeline import run_agent  # deferred: keeps keyless endpoints importable
 
     ice_servers = _ice_servers()
-    print("ICE_CONFIG_SHAPE", [(x.urls, bool(x.username), bool(x.credential)) for x in ice_servers], flush=True)
+    ice_shape = [(x.urls, bool(x.username), bool(x.credential)) for x in ice_servers]
+    print("ICE_CONFIG_SHAPE", ice_shape, flush=True)
     connection = SmallWebRTCConnection(ice_servers=ice_servers)
     # aiortc returns from setLocalDescription before TURN candidate gathering
     # has necessarily finished. With one-shot signaling, wait for gathering so
@@ -169,6 +170,8 @@ async def api_offer(offer: Offer):
             await connection.cleanup()
 
     asyncio.create_task(_run())
+    if isinstance(answer, dict):
+        answer["ice_debug"] = {"configured": ice_shape, "candidates": [line for line in answer_sdp.splitlines() if line.startswith("a=candidate")]}
     return answer
 
 
