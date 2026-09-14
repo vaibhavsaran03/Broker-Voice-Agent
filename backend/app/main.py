@@ -142,7 +142,8 @@ async def api_offer(offer: Offer):
     await connection.initialize(sdp=offer.sdp, type=offer.type)
     answer = connection.get_answer()
     if answer is not None:
-        print("ANSWER_CANDIDATES", [line for line in answer.sdp.splitlines() if line.startswith("a=candidate")], flush=True)
+        answer_sdp = answer.get("sdp", "") if isinstance(answer, dict) else answer.sdp
+        print("ANSWER_CANDIDATES", [line for line in answer_sdp.splitlines() if line.startswith("a=candidate")], flush=True)
     if answer is None:
         raise HTTPException(400, "could not build SDP answer")
 
