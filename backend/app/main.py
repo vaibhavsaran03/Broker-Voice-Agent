@@ -45,9 +45,14 @@ def _ice_servers() -> list:
     turn_user = os.getenv("TURN_USERNAME", "")
     turn_cred = os.getenv("TURN_CREDENTIAL", "")
     if turn_url:
+        urls = [u.strip() for u in turn_url.split(",") if u.strip()]
+        # aiortc supports one TURN server and selects the first TURN URI it
+        # encounters. Prefer TLS/TCP 443 on hosted deployments because Render
+        # can block or NAT UDP allocations; give aiortc a singleton URI.
+        selected = next((u for u in urls if u.startswith("turns:") and ":443" in u), urls[0])
         servers.append(
             IceServer(
-                urls=[u.strip() for u in turn_url.split(",") if u.strip()],
+                urls=selected,
                 username=turn_user,
                 credential=turn_cred,
             )
