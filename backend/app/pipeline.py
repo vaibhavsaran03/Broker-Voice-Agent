@@ -464,7 +464,7 @@ async def run_agent(
             model=sarvam_tts_model,
             voice=sarvam_tts_voice,
             language="en-IN",
-            min_buffer_size=10,
+            min_buffer_size=50,
             max_chunk_length=80,
             pace=1.05,
             enable_preprocessing=True,
