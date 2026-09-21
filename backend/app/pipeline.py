@@ -10,7 +10,9 @@ record only ever contains what the broker actually said.
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
+import json
 import re
 import time
 import wave
@@ -20,6 +22,9 @@ from typing import Any, Awaitable, Callable
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
+    ErrorFrame,
+    TTSAudioRawFrame,
+    TTSStoppedFrame,
     VADUserStoppedSpeakingFrame,
     Frame,
     MetricsFrame,
@@ -38,6 +43,7 @@ from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+from loguru import logger
 
 from . import db
 from .schemas import CallRecord, Furnishing, Listing, TurnLatency
@@ -156,7 +162,10 @@ class WavSarvamSTTService(SarvamSTTService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, (UserStoppedSpeakingFrame, VADUserStoppedSpeakingFrame)):
-            await asyncio.sleep(0.2)  # let queued audio generators drain into the buffer
+            # WebRTC frames have already arrived when the stop marker reaches this service.
+            # A full 200 ms sleep was a fixed tax on every turn and let the 0.1-CPU
+            # Render worker fall further behind. One frame interval is enough to drain.
+            await asyncio.sleep(0.02)
             if self._pcm_buf:
                 chunk = bytes(self._pcm_buf)
                 self._pcm_buf.clear()
@@ -164,6 +173,69 @@ class WavSarvamSTTService(SarvamSTTService):
             if self._socket_client:
                 await self._socket_client.flush()  # server finalizes ONLY on flush
         await super().process_frame(frame, direction)
+
+
+class CompletionAwareSarvamTTSService(SarvamTTSService):
+    """Backport Pipecat #4639 for the pinned release.
+
+    Sarvam can tell us exactly when an utterance is complete. Without requesting
+    and handling that event, Pipecat waits for its idle timeout, making turn and
+    interruption state lag behind the audio.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        sep = "&" if "?" in self._websocket_url else "?"
+        if "send_completion_event=" not in self._websocket_url:
+            self._websocket_url += f"{sep}send_completion_event=true"
+
+    async def _receive_messages(self):
+        async for message in self._get_websocket():
+            if not isinstance(message, str):
+                continue
+            msg = json.loads(message)
+            context_id = self.get_active_audio_context_id()
+            if msg.get("type") == "audio":
+                await self.stop_ttfb_metrics()
+                audio = base64.b64decode(msg["data"]["audio"])
+                await self.append_to_audio_context(
+                    context_id,
+                    TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=context_id),
+                )
+            elif msg.get("type") == "event" and msg.get("data", {}).get("event_type") == "final":
+                if context_id and self.audio_context_available(context_id):
+                    await self.append_to_audio_context(
+                        context_id, TTSStoppedFrame(context_id=context_id)
+                    )
+                    await self.remove_audio_context(context_id)
+            elif msg.get("type") == "error":
+                error_msg = msg.get("data", {}).get("message", "unknown Sarvam TTS error")
+                await self.push_error(error_msg=f"TTS Error: {error_msg}")
+                if "too long" in error_msg.lower() or "timeout" in error_msg.lower():
+                    await self.append_to_audio_context(
+                        context_id, ErrorFrame(error=f"TTS Error: {error_msg}")
+                    )
+
+
+class AudioGapTracker(FrameProcessor):
+    """Log provider audio-frame gaps before WebRTC so cracks can be localized."""
+
+    def __init__(self):
+        super().__init__()
+        self._last_audio_at: float | None = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSAudioRawFrame):
+            now = time.monotonic()
+            if self._last_audio_at is not None:
+                gap_ms = (now - self._last_audio_at) * 1000
+                if gap_ms > 100:
+                    logger.warning(f"tts_provider_frame_gap_ms={gap_ms:.1f}")
+            self._last_audio_at = now
+        elif isinstance(frame, TTSStoppedFrame):
+            self._last_audio_at = None
+        await self.push_frame(frame, direction)
 
 
 # Tool schema shared by the live transport pipeline and the in-process
@@ -211,6 +283,11 @@ class LatencyTracker(FrameProcessor):
         self._user_stopped: float | None = None
         self._turn = 0
         self._pending = TurnLatency(turn=0)
+
+    def note_transcription(self) -> None:
+        """Called where final STT frames are visible, before the user aggregator."""
+        if self._user_stopped and self._pending.stt_ms is None:
+            self._pending.stt_ms = round((time.monotonic() - self._user_stopped) * 1000, 1)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -330,6 +407,9 @@ async def run_agent(
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            # Match Bulbul v3 native output. This removes Pipecat's per-frame
+            # 24 kHz -> transport resample from the CPU-starved worker.
+            audio_out_sample_rate=24000,
             vad_analyzer=SileroVADAnalyzer(),
         ),
     )
@@ -346,8 +426,9 @@ async def run_agent(
         # settings= is the only path that reaches the request.
         settings=GroqLLMService.Settings(model=groq_model, extra={"reasoning_effort": "low"}),
     )
-    tts = SarvamTTSService(
-        api_key=sarvam_api_key, model=sarvam_tts_model, voice_id=sarvam_tts_voice
+    tts = CompletionAwareSarvamTTSService(
+        api_key=sarvam_api_key, model=sarvam_tts_model, voice_id=sarvam_tts_voice,
+        sample_rate=24000,
     )
 
     async def record_fact_handler(params):
@@ -384,6 +465,7 @@ async def run_agent(
         async def process_frame(self, frame: Frame, direction: FrameDirection):
             await super().process_frame(frame, direction)
             if isinstance(frame, TranscriptionFrame):
+                tracker.note_transcription()
                 record.transcript.append(
                     {"role": "broker", "text": frame.text, "ts": datetime.utcnow().isoformat()}
                 )
@@ -399,6 +481,7 @@ async def run_agent(
         aggregators.user(),
         llm,
         tts,
+        AudioGapTracker(),
         transport.output(),
         aggregators.assistant(),
         tracker,
