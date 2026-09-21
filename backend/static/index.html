@@ -99,7 +99,11 @@ async function startCall(){
   pc = new RTCPeerConnection({iceServers: __ICE_SERVERS__});
   dc = pc.createDataChannel('chat');
   dc.onmessage = e => onMessage(JSON.parse(e.data));
-  pc.ontrack = e => { $('remote').srcObject = e.streams[0]; };
+  pc.ontrack = e => {
+    const audio = $('remote');
+    audio.srcObject = e.streams[0];
+    audio.play().catch(err => setStatus('tap Start again to allow audio: ' + err.message));
+  };
   pc.onconnectionstatechange = () => {
     if(pc && pc.connectionState === 'connected') { setStatus('connected - agent is listening'); clearInterval(statsTimer); statsTimer=setInterval(sampleRtcStats,1000); sampleRtcStats(); }
     else if(pc && ['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
