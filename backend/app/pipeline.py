@@ -20,6 +20,7 @@ from datetime import date, datetime
 from typing import Any, Awaitable, Callable
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     ErrorFrame,
@@ -185,6 +186,8 @@ class CompletionAwareSarvamTTSService(SarvamTTSService):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._prebuffer_bytes: dict[str, bytearray] = {}
+        self._primed_contexts: set[str] = set()
         sep = "&" if "?" in self._websocket_url else "?"
         if "send_completion_event=" not in self._websocket_url:
             self._websocket_url += f"{sep}send_completion_event=true"
@@ -198,12 +201,33 @@ class CompletionAwareSarvamTTSService(SarvamTTSService):
             if msg.get("type") == "audio":
                 await self.stop_ttfb_metrics()
                 audio = base64.b64decode(msg["data"]["audio"])
+                # Sarvam delivered live chunks with measured 200 ms gaps. On
+                # WebRTC the empty output queue became audible silence. Keep
+                # 600 ms queued before playback starts so provider jitter is
+                # absorbed while preserving the native 24 kHz PCM path.
+                if context_id not in self._primed_contexts:
+                    buf = self._prebuffer_bytes.setdefault(context_id, bytearray())
+                    buf.extend(audio)
+                    prebuffer_target = int(self.sample_rate * 2 * 0.6)
+                    if len(buf) >= prebuffer_target:
+                        audio = bytes(buf)
+                        self._prebuffer_bytes.pop(context_id, None)
+                        self._primed_contexts.add(context_id)
+                    else:
+                        continue
                 await self.append_to_audio_context(
                     context_id,
                     TTSAudioRawFrame(audio, self.sample_rate, 1, context_id=context_id),
                 )
             elif msg.get("type") == "event" and msg.get("data", {}).get("event_type") == "final":
                 if context_id and self.audio_context_available(context_id):
+                    remainder = self._prebuffer_bytes.pop(context_id, None)
+                    if remainder:
+                        await self.append_to_audio_context(
+                            context_id,
+                            TTSAudioRawFrame(bytes(remainder), self.sample_rate, 1, context_id=context_id),
+                        )
+                    self._primed_contexts.discard(context_id)
                     await self.append_to_audio_context(
                         context_id, TTSStoppedFrame(context_id=context_id)
                     )
@@ -410,7 +434,9 @@ async def run_agent(
             # Match Bulbul v3 native output. This removes Pipecat's per-frame
             # 24 kHz -> transport resample from the CPU-starved worker.
             audio_out_sample_rate=24000,
-            vad_analyzer=SileroVADAnalyzer(),
+            vad_analyzer=SileroVADAnalyzer(
+                params=VADParams(stop_secs=0.6),
+            ),
         ),
     )
     stt = WavSarvamSTTService(
