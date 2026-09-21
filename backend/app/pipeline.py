@@ -362,7 +362,10 @@ def _parse_fact(record: CallRecord, field: str, value: str) -> str:
     low = v.lower()
     try:
         if field == "is_available":
-            f.is_available = low not in ("no", "false", "not available", "unavailable")
+            new_value = low not in ("no", "false", "not available", "unavailable")
+            if f.is_available is not None:
+                return "already recorded - do not call this tool again; speak the next question now"
+            f.is_available = new_value
         elif field in ("rent", "deposit"):
             # "deposit is 2 months" is how brokers actually talk: accept
             # month-based deposits and convert against the recorded rent
