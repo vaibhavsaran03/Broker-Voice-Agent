@@ -352,6 +352,53 @@ class LatencyTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+def _number_from_speech(text: str) -> int | None:
+    """Parse common broker-spoken Indian amounts without an LLM/tool round trip."""
+    low = text.lower().replace(",", "")
+    m = re.search(r"(?:rs\.?|₹)?\s*(\d+(?:\.\d+)?)\s*(k|thousand|lakh|lac)?", low)
+    if m:
+        value = float(m.group(1))
+        unit = m.group(2)
+        if unit in ("k", "thousand"):
+            value *= 1_000
+        elif unit in ("lakh", "lac"):
+            value *= 100_000
+        if value >= 100:
+            return int(value)
+    ones = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+            "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+            "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+            "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+    tokens = re.findall(r"[a-z]+", low)
+    total = current = 0
+    seen = False
+    for token in tokens:
+        if token in ones:
+            current += ones[token]; seen = True
+        elif token == "hundred":
+            current = max(current, 1) * 100; seen = True
+        elif token in ("thousand", "lakh", "lac"):
+            total += max(current, 1) * (1000 if token == "thousand" else 100000)
+            current = 0; seen = True
+    value = total + current
+    return value if seen and value >= 100 else None
+
+
+def _record_transcript_facts(record: CallRecord, text: str) -> None:
+    """Persist explicit broker facts off the speech path; never blocks dialogue."""
+    low = text.lower()
+    if record.facts.is_available is None and "available" in low:
+        record.facts.is_available = not any(x in low for x in ("not available", "unavailable", "already rented"))
+    amount = _number_from_speech(text)
+    if amount is not None:
+        if any(x in low for x in ("rent", "monthly", "per month")):
+            record.facts.rent = amount
+        elif any(x in low for x in ("deposit", "security")):
+            record.facts.deposit = amount
+
+
 def _parse_fact(record: CallRecord, field: str, value: str) -> str:
     """Store one broker-stated fact. Returns a short ack string for the LLM."""
     f = record.facts
@@ -508,6 +555,7 @@ async def run_agent(
             await super().process_frame(frame, direction)
             if isinstance(frame, TranscriptionFrame):
                 tracker.note_transcription()
+                _record_transcript_facts(record, frame.text)
                 record.transcript.append(
                     {"role": "broker", "text": frame.text, "ts": datetime.utcnow().isoformat()}
                 )
