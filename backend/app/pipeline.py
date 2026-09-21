@@ -73,6 +73,8 @@ Rules of the call:
    end the call with the end_call tool.
 7. The broker may speak Hindi or Hinglish; you may reply in simple English or Hinglish,
    matching them. Keep it natural.
+8. If the broker says hello again or asks whether you are audible, answer that directly
+   and then continue. Never repeat the exact same question twice in a row; rephrase once.
 """
 
 
@@ -203,12 +205,12 @@ class CompletionAwareSarvamTTSService(SarvamTTSService):
                 audio = base64.b64decode(msg["data"]["audio"])
                 # Sarvam delivered live chunks with measured 200 ms gaps. On
                 # WebRTC the empty output queue became audible silence. Keep
-                # 600 ms queued before playback starts so provider jitter is
-                # absorbed while preserving the native 24 kHz PCM path.
+                # 200 ms queued before playback starts so one provider gap is
+                # absorbed without adding a large fixed delay while preserving the native 24 kHz PCM path.
                 if context_id not in self._primed_contexts:
                     buf = self._prebuffer_bytes.setdefault(context_id, bytearray())
                     buf.extend(audio)
-                    prebuffer_target = int(self.sample_rate * 2 * 0.6)
+                    prebuffer_target = int(self.sample_rate * 2 * 0.2)
                     if len(buf) >= prebuffer_target:
                         audio = bytes(buf)
                         self._prebuffer_bytes.pop(context_id, None)
@@ -453,8 +455,20 @@ async def run_agent(
         settings=GroqLLMService.Settings(model=groq_model, extra={"reasoning_effort": "low"}),
     )
     tts = CompletionAwareSarvamTTSService(
-        api_key=sarvam_api_key, model=sarvam_tts_model, voice_id=sarvam_tts_voice,
+        api_key=sarvam_api_key,
         sample_rate=24000,
+        # The service default buffers 50 characters before synthesis. Short phone
+        # replies then wait for the whole LLM response/flush even though text is
+        # already visible. Start Sarvam at 10 characters and keep chunks short.
+        settings=SarvamTTSService.Settings(
+            model=sarvam_tts_model,
+            voice=sarvam_tts_voice,
+            language="en-IN",
+            min_buffer_size=10,
+            max_chunk_length=80,
+            pace=1.05,
+            enable_preprocessing=True,
+        ),
     )
 
     async def record_fact_handler(params):
