@@ -43,7 +43,7 @@
   <h1>Broker-Voice-Agent</h1>
   <span class="tag">prototype - mock listings</span>
   <span class="tag">you play the broker; Hindi / Hinglish / English all fine</span>
-  <span id="status">idle</span>
+  <span id="status">idle</span><span id="rtcstats" class="tag">rtc: waiting</span>
 </header>
 <main>
   <section>
@@ -69,7 +69,7 @@
 </main>
 <audio id="remote" autoplay></audio>
 <script>
-let pc=null, dc=null, callId=null, selected=null;
+let pc=null, dc=null, callId=null, selected=null, statsTimer=null;
 const $ = id => document.getElementById(id);
 const fmt = n => n==null ? '-' : n;
 
@@ -101,7 +101,7 @@ async function startCall(){
   dc.onmessage = e => onMessage(JSON.parse(e.data));
   pc.ontrack = e => { $('remote').srcObject = e.streams[0]; };
   pc.onconnectionstatechange = () => {
-    if(pc && pc.connectionState === 'connected') setStatus('connected - agent is listening');
+    if(pc && pc.connectionState === 'connected') { setStatus('connected - agent is listening'); clearInterval(statsTimer); statsTimer=setInterval(sampleRtcStats,1000); sampleRtcStats(); }
     else if(pc && ['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
       setStatus('webrtc ' + pc.connectionState + ' - tap Start to retry');
       $('call').disabled = false;
@@ -139,6 +139,27 @@ async function startCall(){
 
 function setStatus(s){ $('status').textContent = s; }
 
+async function sampleRtcStats(){
+  if(!pc || pc.connectionState !== 'connected') return;
+  try {
+    const stats = await pc.getStats();
+    let inbound=null, pair=null, remote=null;
+    stats.forEach(r => {
+      if(r.type==='inbound-rtp' && r.kind==='audio') inbound=r;
+      if(r.type==='candidate-pair' && r.nominated && r.state==='succeeded') pair=r;
+    });
+    if(pair && pair.remoteCandidateId) remote=stats.get(pair.remoteCandidateId);
+    const jitter = inbound && inbound.jitter!=null ? Math.round(inbound.jitter*1000) : null;
+    const loss = inbound ? (inbound.packetsLost||0) : null;
+    const rtt = pair && pair.currentRoundTripTime!=null ? Math.round(pair.currentRoundTripTime*1000) : null;
+    const proto = remote ? `${remote.candidateType||'?'}:${remote.protocol||'?'}` : '?';
+    const avgJb = inbound && inbound.jitterBufferEmittedCount ?
+      Math.round(1000*inbound.jitterBufferDelay/inbound.jitterBufferEmittedCount) : null;
+    $('rtcstats').textContent = `rtc ${proto} rtt ${fmt(rtt)}ms jitter ${fmt(jitter)}ms loss ${fmt(loss)} jb ${fmt(avgJb)}ms`;
+  } catch(e) { $('rtcstats').textContent='rtc stats unavailable'; }
+}
+
+
 function onMessage(m){
   if(m.type==='status'){ setStatus(m.status + (m.call_id ? ' (call ' + m.call_id + ')' : '')); }
   else if(m.type==='transcript'){
@@ -171,7 +192,7 @@ function renderLatency(t){
 
 async function hangup(){
   $('hangup').disabled = true;
-  if(pc){ pc.close(); pc=null; }
+  clearInterval(statsTimer); statsTimer=null; if(pc){ pc.close(); pc=null; }
   setStatus('call over - running verification + duplicate check...');
   const res = await fetch(`/api/calls/${callId}/process`, {method:'POST'});
   const out = await res.json();
